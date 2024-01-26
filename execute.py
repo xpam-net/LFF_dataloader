@@ -5,7 +5,7 @@ data as a DataFrame
 """
 
 __all__ = ['execute_on_base', 'get_dict_of_bases', 'execute']
-__version__ = '0.2024.01.04.1'
+__version__ = '0.2024.01.22.1'
 __author__ = 'Andrey Luzhin'
 
 import pandas as pd
@@ -19,7 +19,7 @@ from dataloader.dicts import bases as base_names
 from collections.abc import Iterable
 from sqlalchemy.engine.base import Engine
 from sqlalchemy.engine.cursor import CursorResult
-from threading import Thread
+from threading import Thread, Lock
 from datetime import datetime
 
 #
@@ -36,6 +36,7 @@ log_level: list[int] = [
     logging.ERROR, logging.CRITICAL
 ]
 
+
 def _loglevel(level: int | bool = 2) -> None:
     if isinstance(level, bool):
         logger.setLevel(logging.DEBUG if level else logging.WARNING)
@@ -43,9 +44,11 @@ def _loglevel(level: int | bool = 2) -> None:
         logger.setLevel(
             log_level[level] if 0 < level < len(log_level) else log_level[0])
 
+
 #
 # Public functions
 #
+
 
 def execute_on_base(sql: str,
                     base: Base | dict,
@@ -79,7 +82,7 @@ def execute_on_base(sql: str,
             ssh_password=b.ssh.password,
             allow_agent=False,  # disable id_rsa search
             remote_bind_address=(b.server, b.port))
-    # if tunnel is not None:
+        # if tunnel is not None:
         tunnel.start()
     engine: Engine = create_engine(
         URL.create(drivername=b.engine,
@@ -227,22 +230,24 @@ def execute(sql: str,
     df: pd.DataFrame | None
     ds: list[pd.DataFrame] = []
     threads: list[Thread] = []
+    _lock: Lock = Lock()
     res: dict[str, pd.DataFrame | None] = {}
 
-    def _execute(sql: str, res: dict[str, pd.DataFrame | None],
+    def _execute(sql: str, res: dict[str, pd.DataFrame | None], t_name: str,
                  **kwargs) -> pd.DataFrame | None:
         """Service function for executing in threads
 
         Arguments:
             sql {str} -- SQL request
             res {dict[str, pd.DataFrame  |  None]} -- resulting dictionary
+            t_name {str} -- base name for result naming
 
         Returns:
             pd.DataFrame | None -- resulting DataFrame if data exists
         """
         df: pd.DataFrame | None = execute_on_base(sql, **kwargs)
-        if kwargs.get('title', None) is not None:
-            res[kwargs['title']] = df
+        with _lock:
+            res[t_name] = df
         return df
 
     for s, b in bases_dict.items():
@@ -254,6 +259,7 @@ def execute(sql: str,
                             args=(
                                 sql,
                                 res,
+                                s,
                             ),
                             kwargs={
                                 'base': b,
@@ -265,7 +271,7 @@ def execute(sql: str,
         else:
             # Just in case if we want to update neighboring bases,
             # we'll leave the option of not using threads.
-            _execute(sql, res, base=b, title=s, debug=debug, **kwargs)
+            _execute(sql, res, s, base=b, title=s, debug=debug, **kwargs)
 
     if not no_threads:
         for thread in threads:
@@ -274,7 +280,7 @@ def execute(sql: str,
     for s in bases_dict.keys():
         df = res.pop(s)
         if df is not None:
-            if len(df) != 0:
+            if not df.empty:  # len(df) != 0:
                 if insert_name:
                     if name_position is not None:
                         df.insert(name_position, name_title, [s] * df.shape[0])
