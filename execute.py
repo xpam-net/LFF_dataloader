@@ -5,7 +5,7 @@ data as a DataFrame
 """
 
 __all__ = ['execute_on_base', 'get_dict_of_bases', 'execute']
-__version__ = '0.2024.01.22.1'
+__version__ = '0.2024.07.04.1'
 __author__ = 'Andrey Luzhin'
 
 import pandas as pd
@@ -26,10 +26,16 @@ from datetime import datetime
 # Internal variables and functions
 #
 
-logging.basicConfig(format='[%(asctime)s] %(levelname)s - %(message)s',
-                    force=True)
+logging.basicConfig(
+    format='[%(asctime)s] %(levelname)s - %(message)s',
+    force=True
+    #,handlers=[logging.FileHandler("debug.log"),logging.StreamHandler()]
+)
 # '[%(asctime)s] %(module)s;%(name)s;%(funcName)s;%(levelname)s;%(message)s'
 logger = logging.getLogger(__name__)
+
+#import sys
+#logger.addHandler(logging.StreamHandler(sys.stdout))
 
 log_level: list[int] = [
     logging.NOTSET, logging.DEBUG, logging.INFO, logging.WARNING,
@@ -81,6 +87,7 @@ def execute_on_base(sql: str,
             ssh_pkey=b.ssh.key,
             ssh_password=b.ssh.password,
             allow_agent=False,  # disable id_rsa search
+            ssh_config_file=None,  # just in case
             remote_bind_address=(b.server, b.port))
         # if tunnel is not None:
         tunnel.start()
@@ -90,10 +97,12 @@ def execute_on_base(sql: str,
                    password=b.password,
                    host=b.server,
                    port=b.port if tunnel is None else tunnel.local_bind_port,
-                   database=b.base),
+                   database=b.base,
+                   query={'charset': 'utf8'}),
         connect_args={'client_flag': 0}
         if b.engine.startswith('mysql') else {}
         # return affected rowcount, not filtered with WHERE rouwcount
+        #, encoding='utf8'
     )
     # print(engine.dialect.driver, engine.name)
     logger.info('%s: Connected', title)
@@ -101,8 +110,10 @@ def execute_on_base(sql: str,
 
     with engine.connect() as connection:
         #data: pd.DataFrame | None = pd.read_sql(sql, connection)
-        #print(text(sql))
-        result: CursorResult = connection.execute(text(sql))
+        result: CursorResult = connection.execute(
+            text(sql.replace(r':', r'\:')))  # disable bind parameters
+        # so a query like "select * from test where str like ':1%'"
+        # does not produce an error.
         if result.returns_rows:
             # result.rowcount > 0: - is not suitable because
             # rowcount may not exist at all for SELECT statement.
